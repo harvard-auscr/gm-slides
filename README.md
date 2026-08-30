@@ -44,6 +44,14 @@ the headers (`Timestamp`, `Shout-out`, …). If detection guesses wrong:
 | `--no-upload` | off | skip the Google Drive upload this run even if `.env` enables it |
 | `--env-file` | `.env` in the repo | where the upload settings live |
 | `--template` | `template/shoutouts_template.pptx` | the club-theme template every deck is built from |
+| `--font` | `Roboto` | typeface for the slide text, looked up by name in `fonts/` and the Windows font folders |
+| `--font-file` | the bundled Roboto | TTF/OTF used to measure and wrap the text; with only this flag, the typeface name is read from the file |
+
+A custom font must also exist wherever the deck is presented — Google Slides
+only ships Google Fonts, and PowerPoint uses whatever is installed on the
+machine. Text is wrapped using the font file, so `--font` and `--font-file`
+must describe the same font or the renderer will wrap differently than
+predicted.
 
 Optional, Windows + PowerPoint only — open the deck in real PowerPoint, check the
 *rendered* text bounds pairwise, count the animations, export PNGs:

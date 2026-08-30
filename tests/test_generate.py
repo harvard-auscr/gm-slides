@@ -137,3 +137,10 @@ def test_cli_end_to_end(tmp_path):
         capture_output=True, text=True, cwd=ROOT,
     )
     assert bad.returncode == 2 and "error" in bad.stderr
+    # An unresolvable --font fails fast (before the sheet is even read) with the workaround named.
+    bad_font = subprocess.run(
+        [sys.executable, str(ROOT / "generate_shoutouts.py"), str(tmp_path / "missing.csv"), "--gm", "1",
+         "--date", "x", "--font", "No Such Font Family 123", "--no-upload"],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    assert bad_font.returncode == 2 and "--font-file" in bad_font.stderr

@@ -17,9 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from shoutout_gen.metrics import (  # noqa: E402
     CORPUS_INSET_EMU,
     EMU_PER_PT,
+    FONT_PATH,
     LINE_HEIGHT_FACTOR,
     MAX_BOX_WIDTH_EMU,
+    FontNotFoundError,
     TextMeasurer,
+    resolve_font,
 )
 
 SCRAPED = Path(__file__).resolve().parents[1] / "output" / "scraped"
@@ -64,6 +67,40 @@ def test_line_height_factor_is_at_least_the_corpus_value():
     for size, emu in CORPUS_LINE_HEIGHT_EMU.items():
         assert LINE_HEIGHT_FACTOR * size * EMU_PER_PT >= emu
         assert LINE_HEIGHT_FACTOR * size * EMU_PER_PT <= emu * 1.02  # but not wasteful
+
+
+def test_bundled_roboto_line_height_is_byte_identical():
+    """The per-font formula must reproduce the calibrated 1.23 exactly for the
+    bundled Roboto, so existing decks regenerate unchanged."""
+    for size in (10.0, 11.0, 12.0):
+        assert TextMeasurer(size).line_height_emu == int(round(size * LINE_HEIGHT_FACTOR * EMU_PER_PT))
+
+
+def test_line_height_ignores_the_fonts_internal_metrics(tmp_path):
+    """Renderers pitch lines at ~1.21x the point size for every font (probed in
+    PowerPoint across seven fonts whose own metrics range 1.11-1.39), so the
+    factor must NOT follow a font's Windows metrics -- a font claiming taller
+    metrics still renders at the same pitch, and following it would waste rows."""
+    from fontTools.ttLib import TTFont
+
+    tall_path = tmp_path / "tall-roboto.ttf"
+    font = TTFont(str(FONT_PATH))
+    font["OS/2"].usWinAscent += font["head"].unitsPerEm // 5
+    font.save(str(tall_path))
+    assert TextMeasurer(12, font_path=tall_path).line_height_emu == TextMeasurer(12).line_height_emu
+
+
+def test_resolve_font_defaults_file_and_unknown(tmp_path):
+    assert resolve_font(None, None) == ("Roboto", FONT_PATH)
+    assert resolve_font("roboto", None) == ("Roboto", FONT_PATH)
+    # A bare file: the family name is read from the font's own name table.
+    assert resolve_font(None, FONT_PATH) == ("Roboto", FONT_PATH)
+    # An explicit name wins over the file's name table.
+    assert resolve_font("Custom Face", FONT_PATH) == ("Custom Face", FONT_PATH)
+    with pytest.raises(FontNotFoundError):
+        resolve_font("No Such Font Family 123", None)
+    with pytest.raises(FontNotFoundError):
+        resolve_font(None, tmp_path / "missing.ttf")
 
 
 def test_wrap_respects_explicit_newlines_and_word_boundaries():

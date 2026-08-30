@@ -52,6 +52,7 @@ def write_deck(
     out_path: Path,
     font_size_pt: float,
     template_path: Path = TEMPLATE_PATH,
+    font_name: str = FONT_NAME,
 ) -> Path:
     """Render ``shoutouts`` (in click order) into ``out_path`` and return it.
 
@@ -66,7 +67,7 @@ def write_deck(
     # Shape ids per slide, in click order, for the animation sequence.
     click_order: dict[int, list[int]] = {i: [] for i in range(slide_count)}
     for item in shoutouts:
-        shape = _add_textbox(slides[item.slide], item, font_size_pt)
+        shape = _add_textbox(slides[item.slide], item, font_size_pt, font_name)
         click_order[item.slide].append(shape.shape_id)
     for idx, slide in enumerate(slides):
         _add_click_appear_timing(slide, click_order[idx])
@@ -101,7 +102,7 @@ def _blank_slide(prs, layout):
     return slide
 
 
-def _add_textbox(slide, item: PlacedShoutout, font_size_pt: float):
+def _add_textbox(slide, item: PlacedShoutout, font_size_pt: float, font_name: str):
     shape = slide.shapes.add_textbox(
         Emu(item.x_emu), Emu(item.y_emu), Emu(item.width_emu), Emu(item.height_emu)
     )
@@ -117,17 +118,17 @@ def _add_textbox(slide, item: PlacedShoutout, font_size_pt: float):
         run = paragraph.add_run()
         run.text = para_text
         run.font.size = Pt(font_size_pt)
-        _set_run_font_and_colour(run)
+        _set_run_font_and_colour(run, font_name)
     return shape
 
 
-def _set_run_font_and_colour(run) -> None:
-    """Roboto on every script slot + theme text colour, matching the corpus XML byte-for-byte."""
+def _set_run_font_and_colour(run, font_name: str) -> None:
+    """The typeface on every script slot + theme text colour, matching the corpus XML byte-for-byte."""
     rPr = run._r.get_or_add_rPr()
     fill = etree.SubElement(rPr, qn("a:solidFill"))
     etree.SubElement(fill, qn("a:schemeClr")).set("val", "dk1")
     for tag in ("a:latin", "a:ea", "a:cs", "a:sym"):
-        etree.SubElement(rPr, qn(tag)).set("typeface", FONT_NAME)
+        etree.SubElement(rPr, qn(tag)).set("typeface", font_name)
 
 
 def _add_click_appear_timing(slide, shape_ids_in_click_order: list[int]) -> None:

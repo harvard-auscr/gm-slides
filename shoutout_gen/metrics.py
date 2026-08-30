@@ -4,9 +4,10 @@ Why a real font file: PowerPoint/Google Slides wrap text using Roboto's actual
 glyph advances. If we guessed widths from character counts, a line that fits in
 our model could wrap in the renderer, grow the box by a line, and overlap its
 neighbour -- the one thing this project must never do. So we measure with the
-bundled ``fonts/Roboto-Regular.ttf`` through Pillow, and then apply a small
-width slack so the renderer never wraps *earlier* than we predict (wrapping
-later only makes the box shorter, which is harmless).
+real font file (the bundled ``fonts/Roboto-Regular.ttf`` unless another font
+is configured) through Pillow, and then apply a small width slack so the
+renderer never wraps *earlier* than we predict (wrapping later only makes the
+box shorter, which is harmless).
 
 Units: EMU everywhere at the interface (914400 per inch, 12700 per point).
 Vertical metrics are calibrated against the corpus of real Google-Slides
@@ -14,6 +15,7 @@ autofit boxes (see tests/test_metrics.py::test_line_height_matches_corpus).
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -42,6 +44,16 @@ MAX_BOX_WIDTH_EMU = 3_000_000  # every original shout-out box is exactly this wi
 # 1.225 * font size at every size. Rounded up to 1.23 so a predicted box is
 # never shorter than the rendered one.
 LINE_HEIGHT_FACTOR = 1.23
+
+# The factor is deliberately font-independent. Probed empirically (2026-08-30,
+# PowerPoint via COM, autofit textboxes): seven installed fonts with wildly
+# different internal metrics (Windows metrics 1.11 for Times up to 1.39 for
+# Comic Sans) ALL render at 1.2117x the point size -- the renderer ignores the
+# font's own metrics for line pitch. Google Slides was measured at 1.225 for
+# Roboto (the corpus). 1.23 bounds both observations with headroom, so a
+# configured font keeps the calibrated value; for a custom font,
+# verify_render.py is the per-deck empirical check that the text really
+# rendered inside its boxes.
 
 # Widths we predict are multiplied by this before wrapping decisions are made,
 # so a renderer with slightly different kerning/hinting still fits every line
@@ -159,3 +171,59 @@ class TextMeasurer:
 def _cmap_for(font_path: Path) -> frozenset[int]:
     """Code points the font can draw itself; everything else falls back."""
     return frozenset(TTFont(str(font_path)).getBestCmap().keys())
+
+
+class FontNotFoundError(ValueError):
+    """A --font family name that no searched folder contains; measuring needs the real file."""
+
+
+def resolve_font(name: str | None, file: Path | None) -> tuple[str, Path]:
+    """Turn a family name and/or font file into (typeface name, file path).
+
+    Measuring must use the real font file (wrap decisions come from glyph
+    advances) while the deck stores only the family name, so either input can
+    stand alone: a name is looked up in the bundled folder and the Windows
+    font folders by the fonts' own name tables, and a file's family name is
+    read from the file. No arguments means the bundled Roboto.
+    """
+    if file is not None:
+        if not file.is_file():
+            raise FontNotFoundError(f"font file not found: {file}")
+        return name or _family_and_style(file)[0] or file.stem, file
+    if name is None or name.lower() == "roboto":
+        return "Roboto", FONT_PATH
+    fallback: Path | None = None
+    for folder in _font_folders():
+        for candidate in sorted(folder.iterdir()):
+            if candidate.suffix.lower() not in (".ttf", ".otf"):
+                continue
+            try:
+                family, style = _family_and_style(candidate)
+            except Exception:  # not a parseable font; keep scanning
+                continue
+            if family.lower() == name.lower():
+                if style.lower() == "regular":
+                    return family, candidate
+                fallback = fallback or candidate  # a Bold/Italic cut still beats nothing
+    if fallback is not None:
+        return name, fallback
+    raise FontNotFoundError(
+        f"no font file found for {name!r} in the bundled fonts folder or the Windows font"
+        " folders; pass --font-file <path to its .ttf/.otf>"
+    )
+
+
+def _family_and_style(font_path: Path) -> tuple[str, str]:
+    """Family and subfamily from the name table (typographic names preferred)."""
+    names = TTFont(str(font_path), lazy=True)["name"]
+    return names.getBestFamilyName() or "", names.getBestSubFamilyName() or ""
+
+
+def _font_folders() -> list[Path]:
+    """The bundled folder first, then wherever Windows installs fonts."""
+    folders = [FONT_PATH.parent]
+    for env, sub in (("WINDIR", ("Fonts",)), ("LOCALAPPDATA", ("Microsoft", "Windows", "Fonts"))):
+        root = os.environ.get(env)
+        if root:
+            folders.append(Path(root).joinpath(*sub))
+    return [f for f in folders if f.is_dir()]

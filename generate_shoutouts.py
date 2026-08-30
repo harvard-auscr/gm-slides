@@ -19,6 +19,7 @@ from pathlib import Path
 from shoutout_gen import drive
 from shoutout_gen.deck import TEMPLATE_PATH
 from shoutout_gen.generate import AUTO_FONT_SIZES_PT, LAYOUT_MODES, generate, output_name_for
+from shoutout_gen.metrics import FontNotFoundError, resolve_font
 from shoutout_gen.sheet import SheetFormatError, read_shoutouts
 
 # The optional Drive upload reads its settings from the repo's .env regardless of
@@ -51,6 +52,14 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--text-column", help="force the shout-out column (header name)")
     parser.add_argument("--time-column", help="force the timestamp column (header name)")
     parser.add_argument("--template", type=Path, default=TEMPLATE_PATH)
+    parser.add_argument(
+        "--font", default=None,
+        help="typeface for the slide text (default Roboto); looked up by name in fonts\\ and the Windows font folders",
+    )
+    parser.add_argument(
+        "--font-file", type=Path, default=None,
+        help="TTF/OTF used to measure and wrap the text (default: the bundled Roboto); implies --font from the file's own name",
+    )
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE, help="Drive upload settings (see .env.example)")
     parser.add_argument("--no-upload", action="store_true", help="skip the Drive upload even if .env enables it")
     args = parser.parse_args(argv)
@@ -60,6 +69,13 @@ def _main(argv: list[str] | None = None) -> int:
     try:
         upload_cfg = None if args.no_upload else drive.load_config(args.env_file)
     except drive.DriveConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    # Resolve the font before reading the sheet, for the same fail-fast reason.
+    try:
+        font_name, font_file = resolve_font(args.font, args.font_file)
+    except FontNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -80,9 +96,14 @@ def _main(argv: list[str] | None = None) -> int:
         layout_mode=args.layout,
         seed=args.seed,
         template_path=args.template,
+        font_name=font_name,
+        font_file=font_file,
     )
     print(f"{len(shoutouts)} shout-outs -> {result.output}")
     print(f"slides: {result.slide_count} (per slide: {list(result.per_slide_counts)}), font {result.font_size_pt:g}pt")
+    if args.font or args.font_file:
+        # Only worth a line when it is not the default; the renderer must have this font installed.
+        print(f"font: {font_name} (measured with {font_file})")
     if untimed:
         print(f"note: {untimed} row(s) had no parseable timestamp; they were placed last in sheet order")
     if result.slide_count > 1:

@@ -11,9 +11,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .deck import TEMPLATE_PATH, PlacedShoutout, slide_size, write_deck
+from .deck import FONT_NAME, TEMPLATE_PATH, PlacedShoutout, slide_size, write_deck
 from .layout import Box, Placement, overlapping_pairs, pack, pack_fewest_slides
-from .metrics import TextMeasurer
+from .metrics import FONT_PATH, TextMeasurer
 
 LAYOUT_MODES = ("auto", "compact", "dense")
 
@@ -54,6 +54,8 @@ def generate(
     layout_mode: str = "auto",
     seed: int = 0,
     template_path: Path = TEMPLATE_PATH,
+    font_name: str = FONT_NAME,
+    font_file: Path = FONT_PATH,
 ) -> GenerateResult:
     """Lay out ``texts`` (already in click order) and write the deck.
 
@@ -61,6 +63,11 @@ def generate(
     everything fits on one slide (the smallest size is used if nothing does).
     ``layout_mode``: "auto" = prettiest heuristic that fits on one slide,
     else the one needing fewest slides; "compact"/"dense" force one.
+    ``font_name``/``font_file``: the typeface written into the deck and the
+    real font file used to measure and wrap it -- they must describe the same
+    font or the renderer will wrap differently than predicted. Defaults are
+    the bundled Roboto (see ``metrics.resolve_font`` for deriving one from
+    the other).
     """
     if layout_mode not in LAYOUT_MODES:
         raise ValueError(f"layout_mode must be one of {LAYOUT_MODES}, got {layout_mode!r}")
@@ -71,11 +78,11 @@ def generate(
     sizes = (font_size_pt,) if font_size_pt is not None else AUTO_FONT_SIZES_PT
     box_widths = _box_widths(len(texts), seed)
     for size in sizes:
-        placed = _layout(texts, box_widths, size, layout_mode, seed, width, height)
+        placed = _layout(texts, box_widths, size, layout_mode, seed, width, height, font_file)
         if max(p.slide for p in placed) == 0:
             break  # fits on one slide -- done; otherwise try the next size, keeping the last attempt
     _assert_no_overlap(placed)  # belt and braces: the packer's core guarantee, re-checked on the output
-    write_deck(list(placed), out_path, size, template_path)
+    write_deck(list(placed), out_path, size, template_path, font_name)
 
     slide_count = max(p.slide for p in placed) + 1
     counts = tuple(sum(1 for p in placed if p.slide == s) for s in range(slide_count))
@@ -90,10 +97,17 @@ def _box_widths(count: int, seed: int) -> list[int]:
 
 
 def _layout(
-    texts: list[str], box_widths: list[int], font_size_pt: float, layout_mode: str, seed: int, width: int, height: int
+    texts: list[str],
+    box_widths: list[int],
+    font_size_pt: float,
+    layout_mode: str,
+    seed: int,
+    width: int,
+    height: int,
+    font_file: Path,
 ) -> tuple[PlacedShoutout, ...]:
     """Measure and pack at one font size; returns placed shout-outs in click order."""
-    measurer = TextMeasurer(font_size_pt)
+    measurer = TextMeasurer(font_size_pt, font_path=font_file)
     measured = [measurer.measure(text, box_width) for text, box_width in zip(texts, box_widths)]
     boxes = [Box(i, m.width_emu, m.height_emu) for i, m in enumerate(measured)]
     kwargs = dict(slide_width_emu=width, slide_height_emu=height, seed=seed)

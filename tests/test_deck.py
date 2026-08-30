@@ -24,6 +24,15 @@ def test_template_is_16x9_with_no_slides():
     assert [l.name for m in prs.slide_masters for l in m.slide_layouts] == ["ONE_COLUMN_TEXT"]
 
 
+def test_configured_font_lands_on_every_script_slot(tmp_path):
+    """--font must reach latin/ea/cs/sym on each run, exactly where Roboto goes by default."""
+    item = PlacedShoutout("hello", 0, 100_000, 100_000, 1_000_000, 200_000)
+    out = write_deck([item], tmp_path / "d.pptx", 12.0, font_name="Comic Sans MS")
+    run = Presentation(str(out)).slides[0].shapes[0].text_frame.paragraphs[0].runs[0]
+    faces = {run._r.find(f"{{{A_NS}}}rPr/{{{A_NS}}}{tag}").get("typeface") for tag in ("latin", "ea", "cs", "sym")}
+    assert faces == {"Comic Sans MS"}
+
+
 @pytest.fixture
 def deck(tmp_path):
     items = [
