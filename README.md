@@ -1,6 +1,8 @@
-# HAUSCR shout-out slides
+# HAUSCR GM slides
 
-Turns the weekly shout-out form export into a PowerPoint slide: every shout-out
+The weekly GM slides, made from the shout-out form and the snipe game.
+
+The shout-out slide turns the form export into a PowerPoint slide: every shout-out
 is its own textbox, **nothing overlaps**, and each one **appears on its own
 click** in the order it was submitted — the same look as the club's past GM
 slides, minus the collisions.
@@ -14,6 +16,9 @@ python generate_shoutouts.py --gm 26 --date 9.24 --since "9.17 20:00"
 # -> shout-outs only: output/GM #26 9.24---shoutouts.pptx
 python generate_shoutouts.py input/shoutouts.csv --gm 25 --date 9.10
 # -> the same from a downloaded export
+python snipe_slide.py --gm 7 --date 10.28 --since 10.22
+# -> output/GM #7 10.28---snipes.pptx: this week's snipe leaderboard, then the
+#    season so far on a click
 ```
 
 ## Setup
@@ -113,6 +118,26 @@ python verify_render.py "output/GM #25 9.10---shoutouts.pptx" --png-dir renders
 
 On a `make_slide.py` slide the QOTW pane and chart are left out of the overlap
 check (they cover the slide on purpose) and must be the last two clicks.
+
+### Snipe game
+
+```
+python snipe_slide.py --gm 7 --date 10.28 --since 10.22
+# -> reads the newest *_day_by_day.xlsx in ../snipe-tracker/exports and writes
+#    output/GM #7 10.28---snipes.pptx (+ ---snipes-week.png and ---snipes-season.png)
+```
+
+One slide, one click. It opens on this week's leaderboard (most snipes made and
+most sniped, counted from `--since` through `--until`, default the end of today);
+the click puts the season over it: the race for the lead (the season's top five
+by points, their running total at the end of each week) beside the season's
+points and most-sniped lists.
+
+It reads the day-by-day workbook that snipebot's `snipebot export` writes (also
+in the weekly `standings` artifact), so recount and export there first; pass the
+workbook or its folder to read one somewhere else. A row there is one snipe, with
+cooldowns, vetoes and selfie bonuses already applied; this script only counts.
+`.env` uploads the slide to Drive the same way as `make_slide.py`.
 
 ## Google Sheet source (optional)
 

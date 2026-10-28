@@ -106,6 +106,23 @@ def write_image_slide(image_path: Path, out_path: Path, template_path: Path = TE
     return out_path
 
 
+def write_reveal_slide(
+    first_png: Path, revealed_png: Path, out_path: Path, template_path: Path = TEMPLATE_PATH,
+    names: tuple[str, str] = ("first", "revealed"),
+) -> Path:
+    """One slide: ``first_png`` full-bleed, then ``revealed_png`` full-bleed over it on the
+    first click (the same click-Appear as the QOTW chart). Both images should be 16:9."""
+    prs = Presentation(str(template_path))
+    slide = _blank_slide(prs, _layout(prs))
+    first = slide.shapes.add_picture(str(first_png), 0, 0, prs.slide_width, prs.slide_height)
+    revealed = slide.shapes.add_picture(str(revealed_png), 0, 0, prs.slide_width, prs.slide_height)
+    first.name, revealed.name = names
+    _add_click_appear_timing(slide, [revealed.shape_id])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    prs.save(str(out_path))
+    return out_path
+
+
 def slide_size(template_path: Path = TEMPLATE_PATH) -> tuple[int, int]:
     """(width, height) in EMU of the template's page, so the packer targets the real canvas."""
     prs = Presentation(str(template_path))
