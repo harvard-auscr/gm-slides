@@ -37,6 +37,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import term
+
 # --------------------------------------------------------------------------- #
 # The .env contract
 # --------------------------------------------------------------------------- #
@@ -277,8 +279,11 @@ def confirm_on_terminal(existing: list[ExistingFile]) -> bool:
     newest = existing[0]
     copies = f" ({len(existing)} copies; the newest one)" if len(existing) > 1 else ""
     when = f"{newest.modified[:16].replace('T', ' ')} UTC" if newest.modified else "date unknown"
+    question = "Overwrite it in place? [y/N]"
+    if term.enabled(sys.stderr):  # reading from a terminal, input() writes its prompt to stderr, not stdout
+        question = term.paint(question, "bold", "yellow")
     try:
-        answer = input(f'"{newest.name}" is already in the Drive folder{copies}, last modified {when}. Overwrite it in place? [y/N] ')
+        answer = input(f'"{newest.name}" is already in the Drive folder{copies}, last modified {when}. {question} ')
     except EOFError:
         print("\nno answer (no terminal): the existing file is kept; pass --overwrite to replace it without asking", file=sys.stderr)
         return False

@@ -23,7 +23,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from shoutout_gen import cli
+from shoutout_gen import cli, term
 from shoutout_gen.deck import TEMPLATE_PATH, write_image_slide
 from shoutout_gen.metrics import FontNotFoundError, resolve_font
 from shoutout_gen.qotw import output_name_for, read_tally, render_chart
@@ -47,7 +47,7 @@ def _main(argv: list[str] | None = None) -> int:
     try:
         _, font_file = resolve_font(args.font, args.font_file)
     except FontNotFoundError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
     sheet_path = cli.sheet_path(args, source)
     if isinstance(sheet_path, int):
@@ -56,21 +56,21 @@ def _main(argv: list[str] | None = None) -> int:
     try:
         result, skipped = read_tally(sheet_path, args.column, args.since)
     except (SheetFormatError, FileNotFoundError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
     if args.since is not None:
-        print(f"since {args.since:%m/%d/%Y %H:%M}: {result.responses} answers kept, {skipped} older skipped")
+        term.detail(f"since {args.since:%m/%d/%Y %H:%M}: {result.responses} answers kept, {skipped} older skipped")
     if not result.counts:
-        print("error: no QOTW answers to chart" + (" in that window" if args.since is not None else ""), file=sys.stderr)
+        term.error("no QOTW answers to chart" + (" in that window" if args.since is not None else ""))
         return 2
 
     png = render_chart(result, args.out / output_name_for(args.gm, args.date, ".png"), font_file)
     pptx = write_image_slide(png, args.out / output_name_for(args.gm, args.date, ".pptx"), args.template)
-    print(f"QOTW: {result.question}")
-    for name, n in result.counts:
-        print(f"  {n:>3}  {name}")
-    print(f"{result.responses} responses -> {png}")
-    print(f"slide -> {pptx}")
+    print()
+    cli.print_tally(result)
+    print()
+    term.made(f"{result.responses} responses", png)
+    term.made("slide", pptx)
 
     if upload_cfg is not None:
         return cli.upload(pptx, upload_cfg, args.overwrite)

@@ -25,7 +25,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from shoutout_gen import cli
+from shoutout_gen import cli, term
 from shoutout_gen.deck import TEMPLATE_PATH
 from shoutout_gen.generate import AUTO_FONT_SIZES_PT, LAYOUT_MODES, generate, output_name_for
 from shoutout_gen.metrics import FontNotFoundError, resolve_font
@@ -74,7 +74,7 @@ def _main(argv: list[str] | None = None) -> int:
     try:
         font_name, font_file = resolve_font(args.font, args.font_file)
     except FontNotFoundError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
 
     sheet_path = cli.sheet_path(args, source)
@@ -84,20 +84,20 @@ def _main(argv: list[str] | None = None) -> int:
     try:
         shoutouts = read_shoutouts(sheet_path, args.text_column, args.time_column)
     except (SheetFormatError, FileNotFoundError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
     shoutouts, placeholders = split_placeholders(shoutouts)
     if placeholders:
         shown = ", ".join(repr(s.text) for s in placeholders[:5]) + (", ..." if len(placeholders) > 5 else "")
-        print(f"skipped {len(placeholders)} placeholder row(s) with no real message: {shown}")
+        term.detail(f"skipped {len(placeholders)} placeholder row(s) with no real message: {shown}")
     if not shoutouts:
-        print("error: the sheet has no non-empty shout-outs", file=sys.stderr)
+        term.error("the sheet has no non-empty shout-outs")
         return 2
     if args.since is not None:
         shoutouts, skipped = filter_since(shoutouts, args.since)
-        print(f"since {args.since:%m/%d/%Y %H:%M}: {len(shoutouts)} kept, {skipped} older skipped")
+        term.detail(f"since {args.since:%m/%d/%Y %H:%M}: {len(shoutouts)} kept, {skipped} older skipped")
         if not shoutouts:
-            print(f"error: no shout-outs since {args.since:%m/%d/%Y %H:%M}", file=sys.stderr)
+            term.error(f"no shout-outs since {args.since:%m/%d/%Y %H:%M}")
             return 2
     untimed = sum(1 for s in shoutouts if s.timestamp is None)
     stamped = [s.timestamp for s in shoutouts if s.timestamp is not None]
@@ -112,18 +112,19 @@ def _main(argv: list[str] | None = None) -> int:
         font_name=font_name,
         font_file=font_file,
     )
-    print(f"{len(shoutouts)} shout-outs -> {result.output}")
+    print()
+    term.made(f"{len(shoutouts)} shout-outs", result.output)
     if stamped:
-        print(f"submitted {min(stamped):%m/%d/%Y %H:%M} -> {max(stamped):%m/%d/%Y %H:%M}")
-    print(f"slides: {result.slide_count} (per slide: {list(result.per_slide_counts)}), font {result.font_size_pt:g}pt")
+        term.detail(f"submitted {min(stamped):%m/%d/%Y %H:%M} -> {max(stamped):%m/%d/%Y %H:%M}")
+    term.detail(f"slides: {result.slide_count} (per slide: {list(result.per_slide_counts)}), font {result.font_size_pt:g}pt")
     if args.font or args.font_file:
         # Only worth a line when it is not the default; the renderer must have this font installed.
         print(f"font: {font_name} (measured with {font_file})")
     if untimed:
-        print(f"note: {untimed} row(s) had no parseable timestamp; they were placed last in sheet order")
+        term.note(f"{untimed} row(s) had no parseable timestamp; they were placed last in sheet order")
     if result.slide_count > 1:
         hint = "try a smaller --font-size" if args.font_size is not None else f"even at {result.font_size_pt:g}pt"
-        print(f"note: did not fit on one slide ({hint}); the overflow is on the extra slide(s)")
+        term.note(f"did not fit on one slide ({hint}); the overflow is on the extra slide(s)")
 
     if upload_cfg is not None:
         return cli.upload(result.output, upload_cfg, args.overwrite)

@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from shoutout_gen import drive
+from shoutout_gen import drive, term
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -32,25 +32,28 @@ def _main(argv: list[str] | None = None) -> int:
     try:
         cfg = drive.load_config(args.env_file)
     except drive.DriveConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
     if cfg is None:
-        print(f"error: upload is not enabled; set {drive.KEY_FOLDER} in {args.env_file} (see .env.example)", file=sys.stderr)
+        term.error(f"upload is not enabled; set {drive.KEY_FOLDER} in {args.env_file} (see .env.example)")
         return 2
     on_existing = drive.always_overwrite if args.overwrite else drive.confirm_on_terminal
     try:
         uploaded = drive.upload_deck(args.deck, cfg, on_existing=on_existing)
     except FileNotFoundError:
-        print(f"error: no such deck: {args.deck}", file=sys.stderr)
+        term.error(f"no such deck: {args.deck}")
         return 2
     except drive.UploadDeclined as exc:
-        print(f"not uploaded: {exc}: {exc.existing[0].link}\nrerun with --overwrite to replace it")
+        print(
+            f"{term.paint('not uploaded:', 'bold', 'yellow')} {exc}: {term.path(exc.existing[0].link)}\n"
+            "rerun with --overwrite to replace it"
+        )
         return 0
     except Exception as exc:  # sign-in, network or Drive errors: the deck is untouched, just report
-        print(f"upload failed: {exc}", file=sys.stderr)
+        print(f"{term.paint('upload failed:', 'bold', 'red', stream=sys.stderr)} {exc}", file=sys.stderr)
         return 3
     verb = "overwrote" if uploaded.action == "overwritten" else "uploaded"
-    print(f"{verb} {uploaded.name} as Google Slides: {uploaded.link}")
+    print(f"{term.paint(f'{verb} {uploaded.name} as Google Slides:', 'bold', 'green')} {term.path(uploaded.link)}")
     return 0
 
 

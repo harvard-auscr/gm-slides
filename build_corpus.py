@@ -27,6 +27,8 @@ from openpyxl import Workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
+from shoutout_gen import term
+
 SCRAPED_NAME_RE = re.compile(r"GM #(?P<num>\d+) (?P<date>\S+)---shoutouts\.pptx$")
 
 # python-pptx renders a soft line break (<a:br/>) as a vertical tab.
@@ -111,7 +113,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     shoutouts = collect_shoutouts(args.scraped)
     if not shoutouts:
-        print(f"No scraped decks found in {args.scraped}; run scrape_shoutouts.py first", file=sys.stderr)
+        term.error(f"no scraped decks found in {args.scraped}; run scrape_shoutouts.py first")
         return 1
     xlsx, csv_ = args.out / "shoutouts_corpus.xlsx", args.out / "shoutouts_corpus.csv"
     write_corpus(shoutouts, xlsx, csv_)

@@ -45,6 +45,11 @@ source](#google-sheet-source-optional)):
 
 `generate_shoutouts.py` takes the same options and makes the shout-outs alone.
 
+In a terminal the summary is colour-coded: the files made in green with their
+paths and links in cyan, notes in yellow, errors in red, and the bookkeeping
+(rows skipped, the `--since` window) in grey. Piped or redirected output stays
+plain text; set `NO_COLOR=1` to turn colour off, `FORCE_COLOR=1` to force it on.
+
 ### Question of the week
 
 The form's QOTW column (header starting `QOTW`, e.g. `QOTW [9/30]: Which board

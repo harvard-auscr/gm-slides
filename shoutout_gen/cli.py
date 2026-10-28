@@ -1,4 +1,4 @@
-"""Command-line plumbing shared by the scripts: where the sheet comes from, and the Drive upload.
+"""Command-line plumbing shared by the scripts: where the sheet comes from, the QOTW tally, and the Drive upload.
 
 Each script parses its own options; these helpers take the parsed ``args`` (they
 read ``sheet``, ``gm``, ``date``, ``input_dir``, ``env_file``, ``no_upload`` and
@@ -11,7 +11,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import drive, google_sheet
+from . import drive, google_sheet, term
+from .qotw import Tally
 from .sheet import parse_since
 
 # The optional Google features read their settings from the repo's .env, and a
@@ -74,13 +75,12 @@ def load_settings(args) -> tuple[drive.DriveConfig | None, str] | int:
         upload_cfg = None if args.no_upload else drive.load_config(args.env_file)
         source = args.sheet or google_sheet.load_sheet_link(args.env_file)
     except drive.DriveConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
     if not source:
-        print(
-            "error: nothing to read: pass the form export (CSV/XLSX) or the Google Sheet's link, "
-            f"or set {google_sheet.KEY_SHEET} in {args.env_file}",
-            file=sys.stderr,
+        term.error(
+            "nothing to read: pass the form export (CSV/XLSX) or the Google Sheet's link, "
+            f"or set {google_sheet.KEY_SHEET} in {args.env_file}"
         )
         return 2
     return upload_cfg, source
@@ -95,14 +95,20 @@ def sheet_path(args, source: str) -> Path | int:
     try:
         google_sheet.download(ref, drive.load_signin(args.env_file), path)
     except Exception as exc:  # sign-in, access or network: nothing has been generated yet, so just say why
-        print(
-            f"error: {exc}\nnothing was made. Download the tab yourself (File -> Download -> CSV) "
-            "and pass the file instead",
-            file=sys.stderr,
+        term.error(
+            f"{exc}\nnothing was made. Download the tab yourself (File -> Download -> CSV) "
+            "and pass the file instead"
         )
         return 2
-    print(f"pulled {ref.link} -> {path}")
+    term.detail(f"pulled {ref.link} -> {path}")
     return path
+
+
+def print_tally(result: Tally) -> None:
+    """The question, then its answers one per line, most picked first."""
+    print(f"{term.paint('QOTW:', 'bold', 'magenta')} {term.paint(result.question, 'bold')}")
+    for name, n in result.counts:
+        print(f"  {term.paint(f'{n:>3}', 'bold')}  {name}")
 
 
 def upload(deck: Path, upload_cfg: drive.DriveConfig, overwrite: bool) -> int:
@@ -112,16 +118,17 @@ def upload(deck: Path, upload_cfg: drive.DriveConfig, overwrite: bool) -> int:
         uploaded = drive.upload_deck(deck, upload_cfg, on_existing=on_existing)
     except drive.UploadDeclined as exc:
         print(
-            f"not uploaded: {exc}: {exc.existing[0].link}\n"
+            f"{term.paint('not uploaded:', 'bold', 'yellow')} {exc}: {term.path(exc.existing[0].link)}\n"
             f'the new deck is at {deck}; to replace the Slides file: python upload_to_slides.py --overwrite "{deck}"'
         )
         return 0
     except Exception as exc:  # sign-in, network or Drive errors: the deck is safe on disk, so report and let the caller retry
         print(
-            f'upload failed: {exc}\nthe deck is saved locally; retry with: python upload_to_slides.py "{deck}"',
+            f"{term.paint('upload failed:', 'bold', 'red', stream=sys.stderr)} {exc}\n"
+            f'the deck is saved locally; retry with: python upload_to_slides.py "{deck}"',
             file=sys.stderr,
         )
         return 3
     verb = "overwrote the Google Slides file in Drive" if uploaded.action == "overwritten" else "uploaded to Google Drive as Google Slides"
-    print(f"{verb}: {uploaded.link}")
+    print(f"{term.paint(verb + ':', 'bold', 'green')} {term.path(uploaded.link)}")
     return 0

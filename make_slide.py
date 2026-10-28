@@ -20,7 +20,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from shoutout_gen import cli
+from shoutout_gen import cli, term
 from shoutout_gen.deck import TEMPLATE_PATH, QotwFinale
 from shoutout_gen.generate import AUTO_FONT_SIZES_PT, LAYOUT_MODES, generate
 from shoutout_gen.metrics import FontNotFoundError, resolve_font
@@ -70,7 +70,7 @@ def _main(argv: list[str] | None = None) -> int:
     try:
         font_name, font_file = resolve_font(args.font, args.font_file)
     except FontNotFoundError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
     sheet_path = cli.sheet_path(args, source)
     if isinstance(sheet_path, int):
@@ -80,16 +80,16 @@ def _main(argv: list[str] | None = None) -> int:
     try:
         shoutouts = read_shoutouts(sheet_path, args.text_column, args.time_column)
     except (SheetFormatError, FileNotFoundError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
     shoutouts, placeholders = split_placeholders(shoutouts)
     if placeholders:
-        print(f"skipped {len(placeholders)} placeholder row(s) with no real message")
+        term.detail(f"skipped {len(placeholders)} placeholder row(s) with no real message")
     if args.since is not None:
         shoutouts, skipped = filter_since(shoutouts, args.since)
-        print(f"since {args.since:%m/%d/%Y %H:%M}: {len(shoutouts)} shout-outs kept, {skipped} older skipped")
+        term.detail(f"since {args.since:%m/%d/%Y %H:%M}: {len(shoutouts)} shout-outs kept, {skipped} older skipped")
     if not shoutouts:
-        print("error: no shout-outs to put on the slide" + (" in that window" if args.since is not None else ""), file=sys.stderr)
+        term.error("no shout-outs to put on the slide" + (" in that window" if args.since is not None else ""))
         return 2
 
     # --- question of the week ---
@@ -98,16 +98,16 @@ def _main(argv: list[str] | None = None) -> int:
         try:
             result, skipped = read_tally(sheet_path, args.qotw_column, args.since)
         except SheetFormatError as exc:
-            print(f"error: {exc} (or pass --no-qotw)", file=sys.stderr)
+            term.error(f"{exc} (or pass --no-qotw)")
             return 2
+        print()
         if result.counts:
             png = render_chart(result, args.out / chart_name_for(args.gm, args.date, ".png"), font_file)
             finale = QotwFinale(result.question, png)
-            print(f"QOTW: {result.question}")
-            print("  " + ", ".join(f"{name} {n}" for name, n in result.counts))
-            print(f"{result.responses} QOTW responses -> {png}")
+            cli.print_tally(result)
+            term.made(f"{result.responses} QOTW responses", png)
         else:
-            print("note: no QOTW answers in this window; the slide has the shout-outs only")
+            term.note("no QOTW answers in this window; the slide has the shout-outs only")
 
     out = generate(
         [s.text for s in shoutouts],
@@ -122,12 +122,13 @@ def _main(argv: list[str] | None = None) -> int:
     )
     stamped = [s.timestamp for s in shoutouts if s.timestamp is not None]
     clicks = len(shoutouts) + (2 if finale else 0)
-    print(f"{len(shoutouts)} shout-outs{' + QOTW' if finale else ''} -> {out.output} ({clicks} clicks)")
+    print()
+    term.made(f"{len(shoutouts)} shout-outs{' + QOTW' if finale else ''}", out.output, f" ({clicks} clicks)")
     if stamped:
-        print(f"shout-outs submitted {min(stamped):%m/%d/%Y %H:%M} -> {max(stamped):%m/%d/%Y %H:%M}")
-    print(f"slides: {out.slide_count} (shout-outs per slide: {list(out.per_slide_counts)}), font {out.font_size_pt:g}pt")
+        term.detail(f"shout-outs submitted {min(stamped):%m/%d/%Y %H:%M} -> {max(stamped):%m/%d/%Y %H:%M}")
+    term.detail(f"slides: {out.slide_count} (shout-outs per slide: {list(out.per_slide_counts)}), font {out.font_size_pt:g}pt")
     if out.slide_count > 1:
-        print("note: the shout-outs did not fit on one slide; the QOTW follows them on the last slide")
+        term.note("the shout-outs did not fit on one slide; the QOTW follows them on the last slide")
 
     if upload_cfg is not None:
         return cli.upload(out.output, upload_cfg, args.overwrite)

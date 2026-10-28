@@ -31,6 +31,8 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.presentation import Presentation as PresentationType
 
+from shoutout_gen import term
+
 # Layout names as they appear in the Google Slides export.
 SECTION_HEADER_LAYOUT = "SECTION_HEADER"
 SHOUTOUT_CONTENT_LAYOUT = "ONE_COLUMN_TEXT"
@@ -156,9 +158,9 @@ def _main(argv: list[str] | None = None) -> int:
     results = scrape_dataset(args.dataset, args.out)
     for r in results:
         if r.output is None:
-            print(f"SKIP  {r.source.name}: no 'Shoutouts' section found")
+            print(f"{term.paint('SKIP', 'yellow')}  {r.source.name}: no 'Shoutouts' section found")
         else:
-            print(f"OK    {r.source.name} -> {r.output.name} (source slide(s) {list(r.kept_slide_numbers)})")
+            print(f"{term.paint('OK  ', 'green')}  {r.source.name} -> {r.output.name} (source slide(s) {list(r.kept_slide_numbers)})")
     written = sum(1 for r in results if r.output)
     print(f"\n{written}/{len(results)} decks had shout-out slides; written to {args.out}")
     return 0

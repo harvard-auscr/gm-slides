@@ -8,6 +8,7 @@ Modules (interface -> implementation, no cycles):
     deck     write the PPTX (textboxes + per-box click animation, the QOTW finale)
     qotw     tally the question-of-the-week column and draw its bar chart
     cli      the scripts' shared plumbing: sheet source, --since, Drive upload
+    term     colour for the scripts' terminal output (plain when piped)
     drive    optional upload of the finished deck to Google Drive as Google Slides;
              owns the Google sign-in that google_sheet shares
 """

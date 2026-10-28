@@ -21,6 +21,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from shoutout_gen import term
 from shoutout_gen.deck import QOTW_CHART_NAME, QOTW_PANE_NAME
 from shoutout_gen.layout import overlapping_pairs
 
@@ -92,8 +93,8 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     problems = verify(args.pptx, args.png_dir)
     for p in problems:
-        print("PROBLEM:", p)
-    print("PASS" if not problems else f"FAIL ({len(problems)} problems)")
+        print(term.paint("PROBLEM:", "bold", "red"), p)
+    print(term.paint("PASS", "bold", "green") if not problems else term.paint(f"FAIL ({len(problems)} problems)", "bold", "red"))
     return 0 if not problems else 1
 
 
