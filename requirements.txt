@@ -4,6 +4,7 @@ openpyxl>=3.1
 Pillow>=10
 fonttools>=4.40
 numpy>=1.26
+matplotlib>=3.8  # the QOTW chart (qotw_chart.py, make_slide.py)
 
 # Tests
 pytest>=8
@@ -11,6 +12,8 @@ pytest>=8
 # Optional: real-PowerPoint verification (verify_render.py), Windows only
 pywin32>=306; sys_platform == "win32"
 
-# Optional: Google Drive upload (used only when .env sets DRIVE_FOLDER)
+# Optional: Google Sheet source and Google Drive upload (used only when .env
+# sets SHOUTOUT_SHEET / DRIVE_FOLDER, or a sheet link is passed)
 google-api-python-client>=2.100
 google-auth-oauthlib>=1.2
+requests>=2.31

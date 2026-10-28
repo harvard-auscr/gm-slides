@@ -2,6 +2,15 @@
 
     python generate_shoutouts.py shoutouts.csv --gm 25 --date 9.10
         -> output/GM #25 9.10---shoutouts.pptx
+    python generate_shoutouts.py --gm 26 --date 9.24 --since "9.17 20:00"
+        -> pulls the form's responses sheet named in .env, then the same
+
+The spreadsheet is a CSV/XLSX export of the shout-out form, or the form's
+responses sheet itself: pass its link (or set ``SHOUTOUT_SHEET`` in ``.env``)
+and the tab is downloaded into ``input/`` before anything else happens. A form
+that collects all year needs ``--since`` -- normally when the previous GM's
+slide was made, date and time; a bare date means midnight, so that day's
+earlier shout-outs would come back -- so only the new shout-outs make the slide.
 
 Every shout-out becomes its own textbox (Roboto), packed so no two boxes
 touch, and each one appears on its own click in timestamp order. The font size
@@ -16,15 +25,11 @@ import argparse
 import sys
 from pathlib import Path
 
-from shoutout_gen import drive
+from shoutout_gen import cli
 from shoutout_gen.deck import TEMPLATE_PATH
 from shoutout_gen.generate import AUTO_FONT_SIZES_PT, LAYOUT_MODES, generate, output_name_for
 from shoutout_gen.metrics import FontNotFoundError, resolve_font
-from shoutout_gen.sheet import SheetFormatError, read_shoutouts
-
-# The optional Drive upload reads its settings from the repo's .env regardless of
-# the directory the command is run from.
-DEFAULT_ENV_FILE = Path(__file__).resolve().parent / ".env"
+from shoutout_gen.sheet import SheetFormatError, filter_since, read_shoutouts, split_placeholders
 
 
 def _font_size(value: str) -> float | None:
@@ -39,10 +44,7 @@ def _font_size(value: str) -> float | None:
 
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("sheet", type=Path, help="CSV or XLSX with a timestamp column and a shout-out column")
-    parser.add_argument("--gm", type=int, required=True, help="general meeting number, e.g. 25")
-    parser.add_argument("--date", required=True, help="date as written in deck names, e.g. 9.10")
-    parser.add_argument("--out", type=Path, default=Path("output"), help="output folder")
+    cli.add_source_args(parser)
     parser.add_argument(
         "--font-size", type=_font_size, default=None,
         help=f"point size, or 'auto' (default) to try {', '.join(f'{s:g}' for s in AUTO_FONT_SIZES_PT)} until one slide fits",
@@ -60,17 +62,13 @@ def _main(argv: list[str] | None = None) -> int:
         "--font-file", type=Path, default=None,
         help="TTF/OTF used to measure and wrap the text (default: the bundled Roboto); implies --font from the file's own name",
     )
-    parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE, help="Drive upload settings (see .env.example)")
-    parser.add_argument("--no-upload", action="store_true", help="skip the Drive upload even if .env enables it")
+    cli.add_upload_args(parser)
     args = parser.parse_args(argv)
 
-    # Read the upload settings before doing any work, so a typo in .env fails fast
-    # instead of surfacing after the deck has already been generated.
-    try:
-        upload_cfg = None if args.no_upload else drive.load_config(args.env_file)
-    except drive.DriveConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+    settings = cli.load_settings(args)
+    if isinstance(settings, int):
+        return settings
+    upload_cfg, source = settings
 
     # Resolve the font before reading the sheet, for the same fail-fast reason.
     try:
@@ -79,15 +77,30 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    sheet_path = cli.sheet_path(args, source)
+    if isinstance(sheet_path, int):
+        return sheet_path
+
     try:
-        shoutouts = read_shoutouts(args.sheet, args.text_column, args.time_column)
+        shoutouts = read_shoutouts(sheet_path, args.text_column, args.time_column)
     except (SheetFormatError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    shoutouts, placeholders = split_placeholders(shoutouts)
+    if placeholders:
+        shown = ", ".join(repr(s.text) for s in placeholders[:5]) + (", ..." if len(placeholders) > 5 else "")
+        print(f"skipped {len(placeholders)} placeholder row(s) with no real message: {shown}")
     if not shoutouts:
         print("error: the sheet has no non-empty shout-outs", file=sys.stderr)
         return 2
+    if args.since is not None:
+        shoutouts, skipped = filter_since(shoutouts, args.since)
+        print(f"since {args.since:%m/%d/%Y %H:%M}: {len(shoutouts)} kept, {skipped} older skipped")
+        if not shoutouts:
+            print(f"error: no shout-outs since {args.since:%m/%d/%Y %H:%M}", file=sys.stderr)
+            return 2
     untimed = sum(1 for s in shoutouts if s.timestamp is None)
+    stamped = [s.timestamp for s in shoutouts if s.timestamp is not None]
 
     result = generate(
         [s.text for s in shoutouts],
@@ -100,6 +113,8 @@ def _main(argv: list[str] | None = None) -> int:
         font_file=font_file,
     )
     print(f"{len(shoutouts)} shout-outs -> {result.output}")
+    if stamped:
+        print(f"submitted {min(stamped):%m/%d/%Y %H:%M} -> {max(stamped):%m/%d/%Y %H:%M}")
     print(f"slides: {result.slide_count} (per slide: {list(result.per_slide_counts)}), font {result.font_size_pt:g}pt")
     if args.font or args.font_file:
         # Only worth a line when it is not the default; the renderer must have this font installed.
@@ -111,15 +126,7 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"note: did not fit on one slide ({hint}); the overflow is on the extra slide(s)")
 
     if upload_cfg is not None:
-        try:
-            uploaded = drive.upload_deck(result.output, upload_cfg)
-        except Exception as exc:  # sign-in, network or Drive errors: the deck is safe on disk, so report and let the caller retry
-            print(
-                f'upload failed: {exc}\nthe deck is saved locally; retry with: python upload_to_slides.py "{result.output}"',
-                file=sys.stderr,
-            )
-            return 3
-        print(f"uploaded to Google Drive as Google Slides: {uploaded.link}")
+        return cli.upload(result.output, upload_cfg, args.overwrite)
     return 0
 
 

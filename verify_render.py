@@ -21,6 +21,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from shoutout_gen.deck import QOTW_CHART_NAME, QOTW_PANE_NAME
 from shoutout_gen.layout import overlapping_pairs
 
 
@@ -38,8 +39,10 @@ def verify(pptx_path: Path, png_dir: Path | None = None) -> list[str]:
         for s in range(1, pres.Slides.Count + 1):
             slide = pres.Slides(s)
             text_rects, box_rects = [], []
+            finale = [shape.Name for shape in slide.Shapes if shape.Name in (QOTW_PANE_NAME, QOTW_CHART_NAME)]
             for shape in slide.Shapes:
-                if not shape.HasTextFrame:
+                # The QOTW pane and chart cover the whole slide on purpose; only shout-outs must not overlap.
+                if not shape.HasTextFrame or shape.Name in finale:
                     continue
                 tr = shape.TextFrame.TextRange
                 text_rects.append((tr.BoundLeft, tr.BoundTop, tr.BoundWidth, tr.BoundHeight))
@@ -60,11 +63,14 @@ def verify(pptx_path: Path, png_dir: Path | None = None) -> list[str]:
             box_hits = overlapping_pairs(box_rects)
             for i, j in text_hits:
                 problems.append(f"slide {s}: rendered text overlaps between shapes {i} and {j}")
-            anims = slide.TimeLine.MainSequence.Count
-            if anims != len(text_rects):
-                problems.append(f"slide {s}: {anims} animations for {len(text_rects)} text shapes")
+            sequence = slide.TimeLine.MainSequence
+            anims = sequence.Count
+            if anims != len(text_rects) + len(finale):
+                problems.append(f"slide {s}: {anims} animations for {len(text_rects)} shout-outs + {len(finale)} QOTW shapes")
+            elif finale and [sequence(i).Shape.Name for i in range(anims - 1, anims + 1)] != [QOTW_PANE_NAME, QOTW_CHART_NAME]:
+                problems.append(f"slide {s}: the QOTW pane and chart are not the last two clicks, in that order")
             print(
-                f"slide {s}: {len(text_rects)} shapes, {anims} click animations, "
+                f"slide {s}: {len(text_rects)} shout-outs{' + QOTW pane, chart' if finale else ''}, {anims} click animations, "
                 f"text overlaps={len(text_hits)}, box overlaps={len(box_hits)}"
             )
             if png_dir is not None:

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .deck import FONT_NAME, TEMPLATE_PATH, PlacedShoutout, slide_size, write_deck
+from .deck import FONT_NAME, TEMPLATE_PATH, PlacedShoutout, QotwFinale, slide_size, write_deck
 from .layout import Box, Placement, overlapping_pairs, pack, pack_fewest_slides
 from .metrics import FONT_PATH, TextMeasurer
 
@@ -56,6 +56,7 @@ def generate(
     template_path: Path = TEMPLATE_PATH,
     font_name: str = FONT_NAME,
     font_file: Path = FONT_PATH,
+    qotw: QotwFinale | None = None,
 ) -> GenerateResult:
     """Lay out ``texts`` (already in click order) and write the deck.
 
@@ -67,7 +68,8 @@ def generate(
     real font file used to measure and wrap it -- they must describe the same
     font or the renderer will wrap differently than predicted. Defaults are
     the bundled Roboto (see ``metrics.resolve_font`` for deriving one from
-    the other).
+    the other). ``qotw``: the question of the week, revealed on the last
+    slide after the last shout-out (see ``deck.write_deck``).
     """
     if layout_mode not in LAYOUT_MODES:
         raise ValueError(f"layout_mode must be one of {LAYOUT_MODES}, got {layout_mode!r}")
@@ -82,7 +84,7 @@ def generate(
         if max(p.slide for p in placed) == 0:
             break  # fits on one slide -- done; otherwise try the next size, keeping the last attempt
     _assert_no_overlap(placed)  # belt and braces: the packer's core guarantee, re-checked on the output
-    write_deck(list(placed), out_path, size, template_path, font_name)
+    write_deck(list(placed), out_path, size, template_path, font_name, qotw)
 
     slide_count = max(p.slide for p in placed) + 1
     counts = tuple(sum(1 for p in placed if p.slide == s) for s in range(slide_count))

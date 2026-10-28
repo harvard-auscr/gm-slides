@@ -19,7 +19,8 @@ from pathlib import Path
 
 from lxml import etree
 from pptx import Presentation
-from pptx.enum.text import MSO_AUTO_SIZE
+from pptx.dml.color import RGBColor
+from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Pt
 
@@ -47,21 +48,33 @@ class PlacedShoutout:
 # --------------------------------------------------------------------------- #
 # Public interface
 # --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class QotwFinale:
+    """The question of the week, revealed after the last shout-out: an intro pane, then the chart."""
+
+    question: str
+    chart_png: Path
+
+
 def write_deck(
     shoutouts: list[PlacedShoutout],
     out_path: Path,
     font_size_pt: float,
     template_path: Path = TEMPLATE_PATH,
     font_name: str = FONT_NAME,
+    qotw: QotwFinale | None = None,
 ) -> Path:
     """Render ``shoutouts`` (in click order) into ``out_path`` and return it.
 
     Slides are created on demand from the template's ONE_COLUMN_TEXT layout;
-    slide N of the output holds every shout-out whose ``slide == N``.
+    slide N of the output holds every shout-out whose ``slide == N``. With
+    ``qotw``, the last slide gets two more clicks after its last shout-out: a
+    full-slide "QOTW: <question>" pane covering the shout-outs, then the chart
+    over that.
     """
     prs = Presentation(str(template_path))
     layout = _layout(prs)
-    slide_count = max((s.slide for s in shoutouts), default=-1) + 1
+    slide_count = max(max((s.slide for s in shoutouts), default=-1) + 1, 1 if qotw else 0)
     slides = [_blank_slide(prs, layout) for _ in range(slide_count)]
 
     # Shape ids per slide, in click order, for the animation sequence.
@@ -69,9 +82,25 @@ def write_deck(
     for item in shoutouts:
         shape = _add_textbox(slides[item.slide], item, font_size_pt, font_name)
         click_order[item.slide].append(shape.shape_id)
+    if qotw is not None:
+        last = slide_count - 1
+        pane = _add_qotw_pane(slides[last], qotw.question, prs.slide_width, prs.slide_height, font_name)
+        chart = slides[last].shapes.add_picture(str(qotw.chart_png), 0, 0, prs.slide_width, prs.slide_height)
+        pane.name, chart.name = QOTW_PANE_NAME, QOTW_CHART_NAME
+        click_order[last] += [pane.shape_id, chart.shape_id]
     for idx, slide in enumerate(slides):
         _add_click_appear_timing(slide, click_order[idx])
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    prs.save(str(out_path))
+    return out_path
+
+
+def write_image_slide(image_path: Path, out_path: Path, template_path: Path = TEMPLATE_PATH) -> Path:
+    """One slide in the club theme holding ``image_path`` full-bleed (the image should be 16:9)."""
+    prs = Presentation(str(template_path))
+    slide = _blank_slide(prs, _layout(prs))
+    slide.shapes.add_picture(str(image_path), 0, 0, prs.slide_width, prs.slide_height)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out_path))
     return out_path
@@ -119,6 +148,36 @@ def _add_textbox(slide, item: PlacedShoutout, font_size_pt: float, font_name: st
         run.text = para_text
         run.font.size = Pt(font_size_pt)
         _set_run_font_and_colour(run, font_name)
+    return shape
+
+
+QOTW_PANE_NAME = "QOTW pane"  # shape names, so verify_render.py can tell the finale from the shout-outs
+QOTW_CHART_NAME = "QOTW chart"
+QOTW_PANE_PT = 40
+HAUSCR_RED = "AE3646"  # the club logo's red: the "QOTW:" label here and the bars of the QOTW chart
+_QOTW_PANE_MARGIN_EMU = 914_400  # 1in either side, so a long question wraps instead of touching the edge
+
+
+def _add_qotw_pane(slide, question: str, width: int, height: int, font_name: str):
+    """Full-slide opaque white textbox, "QOTW:" (HAUSCR red, bold) + the question, centred both ways."""
+    shape = slide.shapes.add_textbox(0, 0, width, height)
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
+    tf = shape.text_frame
+    tf.word_wrap = True
+    tf.auto_size = MSO_AUTO_SIZE.NONE
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    tf.margin_left = tf.margin_right = Emu(_QOTW_PANE_MARGIN_EMU)
+    paragraph = tf.paragraphs[0]
+    paragraph.alignment = PP_ALIGN.CENTER
+    for text, accent in (("QOTW: ", True), (question, False)):
+        run = paragraph.add_run()
+        run.text = text
+        run.font.size = Pt(QOTW_PANE_PT)
+        _set_run_font_and_colour(run, font_name)
+        if accent:
+            run.font.bold = True
+            run.font.color.rgb = RGBColor.from_string(HAUSCR_RED)
     return shape
 
 

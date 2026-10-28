@@ -10,6 +10,10 @@ unless ``DRIVE_FOLDER`` is set and ``DRIVE_UPLOAD`` is not switched off, and the
 Google client libraries are imported only when an upload actually runs, so the
 generator needs neither credentials nor network access by default.
 
+The sign-in is shared: ``load_signin`` / ``sign_in`` give the same credentials to
+``google_sheet``, which pulls the form's responses tab with them, so connecting
+the sheet costs no second consent.
+
 Auth choices (both deliberate):
   * A user OAuth flow, not a service account: service accounts have no storage
     quota on a personal My Drive, so their uploads into a shared folder fail.
@@ -17,12 +21,19 @@ Auth choices (both deliberate):
   * The full ``drive`` scope, not ``drive.file``: the narrower scope only sees
     files the app itself created, so it cannot place an upload into a folder
     the user picked by pasting a link (the parent lookup 404s).
+
+Re-running a week: a Google Slides file with the deck's name may already be in
+the folder. ``upload_deck`` then asks its ``on_existing`` callback (the CLIs pass
+a terminal prompt, or "yes" for ``--overwrite``) and either replaces that file's
+content in place -- same file ID, same link -- or raises ``UploadDeclined`` and
+leaves the folder untouched. It never silently creates a second copy.
 """
 from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
+import sys
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,7 +51,7 @@ DEFAULT_CLIENT_FILE = ".google/credentials.json"
 DEFAULT_TOKEN_FILE = ".google/token.json"
 _OFF_VALUES = {"0", "off", "false", "no"}
 
-SCOPES = ["https://www.googleapis.com/auth/drive"]
+SCOPES = ["https://www.googleapis.com/auth/drive"]  # also what the Sheets CSV export accepts (google_sheet)
 GOOGLE_SLIDES_MIME = "application/vnd.google-apps.presentation"
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
@@ -54,6 +65,20 @@ _QUOTES = "\"'"
 
 class DriveConfigError(ValueError):
     """The .env is present but unusable (syntax, bad folder link, no way to sign in)."""
+
+
+@dataclass(frozen=True)
+class SignInConfig:
+    """How to obtain Google credentials: the cached token, and the OAuth client for a fresh consent.
+
+    Paths are absolute (resolved against the .env). Shared by the upload and the
+    Google Sheet pull, which run on the same token.
+    """
+
+    token_file: Path
+    client_file: Path
+    client_id: str = ""
+    client_secret: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,6 +97,28 @@ class UploadResult:
     file_id: str
     name: str
     link: str
+    action: str = "created"  # or "overwritten": an existing same-name file was replaced in place
+
+
+@dataclass(frozen=True)
+class ExistingFile:
+    """A Google Slides file already in the folder with the deck's name."""
+
+    file_id: str
+    name: str
+    link: str
+    modified: str  # RFC 3339 as Drive reports it, e.g. 2026-09-23T21:40:12.000Z
+
+
+class UploadDeclined(Exception):
+    """A same-name Slides file is in the folder and the caller chose not to overwrite it."""
+
+    def __init__(self, existing: list[ExistingFile]):
+        super().__init__(f'"{existing[0].name}" is already in the Drive folder and was left untouched')
+        self.existing = existing
+
+
+OnExisting = Callable[[list[ExistingFile]], bool]
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -83,8 +130,12 @@ def read_env_file(path: Path) -> dict[str, str]:
     path = Path(path)
     if not path.exists():
         return {}
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:  # e.g. UTF-16, what Windows PowerShell's Out-File writes
+        raise DriveConfigError(f"{path} is not UTF-8 text; save it as UTF-8") from exc
     values: dict[str, str] = {}
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
+    for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -92,8 +143,13 @@ def read_env_file(path: Path) -> dict[str, str]:
         if not match:
             raise DriveConfigError(f"{path}:{lineno}: expected KEY=VALUE, got {raw!r}")
         key, value = match.group(1), match.group(2).strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in _QUOTES:
-            value = value[1:-1]  # quoted: verbatim, a '#' inside is not a comment
+        close = value.find(value[0], 1) if value and value[0] in _QUOTES else -1
+        if close > 0:
+            # Quoted: verbatim up to the closing quote (a '#' inside is not a comment); a comment may follow.
+            after = value[close + 1:].strip()
+            if after and not after.startswith("#"):
+                raise DriveConfigError(f"{path}:{lineno}: unexpected text after the quoted value in {raw!r}")
+            value = value[1:close]
         else:
             value = value.split(" #", 1)[0].rstrip()  # unquoted: allow a trailing comment
         values[key] = value
@@ -111,10 +167,9 @@ def extract_folder_id(link_or_id: str) -> str:
     raise DriveConfigError(f"{KEY_FOLDER} is not a Drive folder link or ID: {link_or_id!r}")
 
 
-def load_config(env_file: Path, environ: Mapping[str, str] = os.environ) -> DriveConfig | None:
-    """Return the upload settings, or ``None`` when the feature is off.
+def _settings(env_file: Path, environ: Mapping[str, str]):
+    """A getter over the merged environment + .env values, and the folder relative paths resolve against.
 
-    Off means: no .env, no ``DRIVE_FOLDER``, or ``DRIVE_UPLOAD`` set to off/false/0/no.
     Real environment variables override the file so CI or a one-off shell can steer
     it without editing .env. Relative paths resolve against the .env's folder, so
     the result does not depend on the working directory.
@@ -125,18 +180,43 @@ def load_config(env_file: Path, environ: Mapping[str, str] = os.environ) -> Driv
     def get(key: str) -> str:
         return (environ.get(key) or values.get(key, "")).strip()
 
+    return get, env_file.resolve().parent
+
+
+def load_signin(env_file: Path, environ: Mapping[str, str] = os.environ) -> SignInConfig:
+    """The sign-in settings, whether or not the upload is enabled.
+
+    Always returns a config: without a .env it is just the default token and client
+    paths. Whether a sign-in can actually happen is decided when it is attempted
+    (``sign_in`` says what to set if it cannot).
+    """
+    get, base = _settings(env_file, environ)
+    return SignInConfig(
+        token_file=base / (get(KEY_TOKEN_FILE) or DEFAULT_TOKEN_FILE),
+        client_file=base / (get(KEY_CLIENT_FILE) or DEFAULT_CLIENT_FILE),
+        client_id=get(KEY_CLIENT_ID),
+        client_secret=get(KEY_CLIENT_SECRET),
+    )
+
+
+def load_config(env_file: Path, environ: Mapping[str, str] = os.environ) -> DriveConfig | None:
+    """Return the upload settings, or ``None`` when the feature is off.
+
+    Off means: no .env, no ``DRIVE_FOLDER``, or ``DRIVE_UPLOAD`` set to off/false/0/no.
+    """
+    get, _ = _settings(env_file, environ)
     if get(KEY_SWITCH).lower() in _OFF_VALUES:
         return None
     folder = get(KEY_FOLDER)
     if not folder:
         return None
-    base = env_file.resolve().parent
+    signin = load_signin(env_file, environ)
     return DriveConfig(
         folder_id=extract_folder_id(folder),
-        token_file=base / (get(KEY_TOKEN_FILE) or DEFAULT_TOKEN_FILE),
-        client_file=base / (get(KEY_CLIENT_FILE) or DEFAULT_CLIENT_FILE),
-        client_id=get(KEY_CLIENT_ID),
-        client_secret=get(KEY_CLIENT_SECRET),
+        token_file=signin.token_file,
+        client_file=signin.client_file,
+        client_id=signin.client_id,
+        client_secret=signin.client_secret,
     )
 
 
@@ -161,6 +241,55 @@ def upload_metadata(deck_path: Path, folder_id: str) -> dict:
     return {"name": Path(deck_path).stem, "parents": [folder_id], "mimeType": GOOGLE_SLIDES_MIME}
 
 
+def existing_query(name: str, folder_id: str) -> str:
+    """Drive search for a live (not trashed) Google Slides file of that name in the folder."""
+    escaped = name.replace("\\", "\\\\").replace("'", "\\'")
+    return f"name = '{escaped}' and '{folder_id}' in parents and mimeType = '{GOOGLE_SLIDES_MIME}' and trashed = false"
+
+
+def find_existing(service, name: str, folder_id: str) -> list[ExistingFile]:
+    """Same-name Slides files already in the folder, newest first."""
+    listed = (
+        service.files()
+        .list(
+            q=existing_query(name, folder_id),
+            fields="files(id,name,webViewLink,modifiedTime)",
+            orderBy="modifiedTime desc",  # so the newest is in the page even with more than 10 copies
+            pageSize=10,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        )
+        .execute()
+    )
+    found = [
+        ExistingFile(f["id"], f.get("name", name), f.get("webViewLink", ""), f.get("modifiedTime", ""))
+        for f in listed.get("files", [])
+    ]
+    return sorted(found, key=lambda f: f.modified, reverse=True)
+
+
+def confirm_on_terminal(existing: list[ExistingFile]) -> bool:
+    """The interactive ``on_existing``: ask on the terminal; only y/yes overwrites.
+
+    No terminal to answer on (piped or closed stdin) counts as no, with a hint
+    about ``--overwrite`` so a script can opt in explicitly.
+    """
+    newest = existing[0]
+    copies = f" ({len(existing)} copies; the newest one)" if len(existing) > 1 else ""
+    when = f"{newest.modified[:16].replace('T', ' ')} UTC" if newest.modified else "date unknown"
+    try:
+        answer = input(f'"{newest.name}" is already in the Drive folder{copies}, last modified {when}. Overwrite it in place? [y/N] ')
+    except EOFError:
+        print("\nno answer (no terminal): the existing file is kept; pass --overwrite to replace it without asking", file=sys.stderr)
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def always_overwrite(existing: list[ExistingFile]) -> bool:
+    """The ``on_existing`` behind ``--overwrite``."""
+    return True
+
+
 def _google_libs():
     """Import the Google client libraries, with an actionable error if they are missing."""
     try:
@@ -174,8 +303,11 @@ def _google_libs():
     return build, MediaFileUpload
 
 
-def _sign_in(cfg: DriveConfig):
-    """Cached token -> silent refresh -> one-time browser consent. Returns Google credentials."""
+def sign_in(cfg: SignInConfig | DriveConfig):
+    """Cached token -> silent refresh -> one-time browser consent. Returns Google credentials.
+
+    Takes anything with the ``SignInConfig`` fields, so the upload config works too.
+    """
     from google.auth.exceptions import RefreshError
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
@@ -207,8 +339,14 @@ def _sign_in(cfg: DriveConfig):
     return creds
 
 
-def upload_deck(deck_path: Path, cfg: DriveConfig, service=None) -> UploadResult:
+def upload_deck(deck_path: Path, cfg: DriveConfig, service=None, on_existing: OnExisting | None = None) -> UploadResult:
     """Upload one PPTX into the configured folder as a Google Slides file.
+
+    If a Slides file with the deck's name is already there, ``on_existing`` gets
+    the matches (newest first) and returns True to overwrite the newest in place
+    (same file ID and link) or False to leave the folder alone, in which case
+    ``UploadDeclined`` is raised. With no ``on_existing`` an existing file is never
+    touched -- the safe default for anything unattended.
 
     ``service`` is injectable so tests can pass a stub; callers normally leave it
     ``None`` and get a signed-in Drive v3 client.
@@ -218,7 +356,28 @@ def upload_deck(deck_path: Path, cfg: DriveConfig, service=None) -> UploadResult
         raise FileNotFoundError(deck_path)
     build, MediaFileUpload = _google_libs()
     if service is None:
-        service = build("drive", "v3", credentials=_sign_in(cfg), cache_discovery=False)
+        service = build("drive", "v3", credentials=sign_in(cfg), cache_discovery=False)
+    existing = find_existing(service, deck_path.stem, cfg.folder_id)
+    if existing:
+        if on_existing is None or not on_existing(existing):
+            raise UploadDeclined(existing)
+        target = existing[0]
+        updated = (
+            service.files()
+            .update(
+                fileId=target.file_id,
+                media_body=MediaFileUpload(str(deck_path), mimetype=PPTX_MIME),
+                fields="id,name,webViewLink",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+        return UploadResult(
+            file_id=updated.get("id", target.file_id),
+            name=updated.get("name", target.name),
+            link=updated.get("webViewLink", target.link),
+            action="overwritten",
+        )
     created = (
         service.files()
         .create(

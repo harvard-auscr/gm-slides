@@ -9,19 +9,29 @@ Ordering rule: by timestamp ascending (stable), which becomes click order on
 the slide. Rows without a parseable timestamp keep their sheet position after
 the timestamped ones. Blank messages are dropped; duplicates are kept because
 "bao" submitted by three people is three shout-outs.
+
+A form that collects all year needs a cutoff: ``parse_since`` turns the CLI's
+``--since`` into a datetime and ``filter_since`` drops what came before it.
+``split_placeholders`` sets aside rows whose message is only punctuation ("/",
+"."): members type those into the required shout-out box to answer the other
+questions on the form, and they are not shout-outs.
 """
 from __future__ import annotations
 
 import csv
 import re
+import string
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from openpyxl import load_workbook
 
 TIME_HEADER_RE = re.compile(r"time|date|submitted", re.I)
 TEXT_HEADER_RE = re.compile(r"shout|message|text|response", re.I)
+# The deck-name style date ("9.17"), optionally with a time of day ("9.17 21:00").
+_DECK_DATE_RE = re.compile(r"(\d{1,2})\.(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?")
+MAX_BARE_DATE_AGE = timedelta(days=183)  # a week's window is days; half a year back is a typo
 
 # Formats Google Forms / Sheets / Excel exports actually produce.
 _TIMESTAMP_FORMATS = (
@@ -72,6 +82,11 @@ def read_shoutouts(path: Path, text_column: str | None = None, time_column: str 
     return shoutouts
 
 
+def read_table(path: Path) -> tuple[list[str], list[dict[str, object]]]:
+    """Header names and one dict per data row (.csv or .xlsx), for readers of the form's other columns."""
+    return _load_table(Path(path))
+
+
 def parse_timestamp(value) -> datetime | None:
     """datetime from a cell that may already be a datetime, an ISO string, or a US-style string."""
     if isinstance(value, datetime):
@@ -91,6 +106,71 @@ def parse_timestamp(value) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+def parse_since(text: str, today: date | None = None) -> datetime:
+    """The cutoff behind ``--since``: ``m.d`` as in deck names (``9.17``), optionally
+    with ``HH:MM``, or any date/datetime ``parse_timestamp`` understands.
+
+    ``m.d`` carries no year: it means the most recent such day that is not after
+    ``today``, so ``--since 12.10`` typed in January still points at last December.
+    One that lands more than ``MAX_BARE_DATE_AGE`` back is refused as a likely typo
+    (``10.29`` typed on 10/28 would otherwise put a whole year on the slide); a full
+    date still reaches back as far as you like. Raises ``ValueError`` for anything else.
+    """
+    text = text.strip()
+    match = _DECK_DATE_RE.fullmatch(text)
+    if match:
+        today = today or date.today()
+        month, day = int(match.group(1)), int(match.group(2))
+        hour, minute = int(match.group(3) or 0), int(match.group(4) or 0)
+        for year in (today.year, today.year - 1):
+            try:
+                candidate = datetime(year, month, day, hour, minute)
+            except ValueError:
+                continue
+            if candidate.date() <= today:
+                age = (today - candidate.date()).days
+                if age > MAX_BARE_DATE_AGE.days:
+                    raise ValueError(
+                        f"{text!r} means {candidate:%m/%d/%Y}, {age} days ago; "
+                        f"if that is right, give the full date ({candidate:%Y-%m-%d})"
+                    )
+                return candidate
+        raise ValueError(f"not a date: {text!r}")
+    stamp = parse_timestamp(text)
+    if stamp is None:
+        raise ValueError(f"not a date: {text!r} (use m.d, 'm.d HH:MM' or YYYY-MM-DD [HH:MM])")
+    if stamp.tzinfo is not None:  # the form's timestamps are local and carry no zone, so they can't be compared
+        raise ValueError(f"{text!r} has a time zone; give the local time without one")
+    return stamp
+
+
+_PLACEHOLDER_CHARS = set(string.punctuation + string.whitespace)
+
+
+def is_placeholder(text: str) -> bool:
+    """True for a message made only of ASCII punctuation/whitespace ("/", ".", "-", "??").
+
+    Anything with a letter, a digit or a non-ASCII character (an emoji is a real
+    shout-out) is kept.
+    """
+    return bool(text) and all(c in _PLACEHOLDER_CHARS for c in text)
+
+
+def split_placeholders(shoutouts: list[Shoutout]) -> tuple[list[Shoutout], list[Shoutout]]:
+    """(real shout-outs, placeholder rows) -- so the caller can say what it left out."""
+    kept = [s for s in shoutouts if not is_placeholder(s.text)]
+    return kept, [s for s in shoutouts if is_placeholder(s.text)]
+
+
+def filter_since(shoutouts: list[Shoutout], cutoff: datetime) -> tuple[list[Shoutout], int]:
+    """Keep the shout-outs submitted at or after ``cutoff``; returns (kept, number dropped).
+
+    Rows without a timestamp are kept: nothing is ever dropped silently on a guess.
+    """
+    kept = [s for s in shoutouts if s.timestamp is None or s.timestamp >= cutoff]
+    return kept, len(shoutouts) - len(kept)
 
 
 # --------------------------------------------------------------------------- #
